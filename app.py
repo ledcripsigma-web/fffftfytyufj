@@ -1,16 +1,23 @@
 from flask import Flask, request, jsonify, render_template_string
-import os, zipfile, subprocess, shutil, json, uuid, threading, time
+import os, zipfile, subprocess, shutil, json, uuid, threading, time, signal, psutil
+import requests
+from datetime import datetime
 
 app = Flask(__name__)
 
+# Папки
 UPLOADS = 'uploads'
 PROJECTS = 'projects'
 DB_FILE = 'hosts.json'
+PROCESSES_FILE = 'processes.json'
 
+# Авто-пинг
+PING_URL = "https://fffftfytyufj.onrender.com"
+PING_INTERVAL = 240  # 4 минуты
+
+# Создаем папки
 os.makedirs(UPLOADS, exist_ok=True)
 os.makedirs(PROJECTS, exist_ok=True)
-
-processes = {}
 
 HTML = '''
 <!DOCTYPE html>
@@ -19,383 +26,350 @@ HTML = '''
     <title>/host</title>
     <meta charset="UTF-8">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            background: #1a1a1a;
-            color: #ccc;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-            line-height: 1.4;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        
-        h1 {
-            color: #888;
-            font-size: 18px;
-            font-weight: normal;
-            margin-bottom: 20px;
-            border-bottom: 1px solid #333;
-            padding-bottom: 5px;
-        }
-        
-        .upload-box {
-            background: #222;
-            border: 1px solid #333;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        
-        input[type="file"] {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            color: #ccc;
-            padding: 8px;
-            width: 100%;
-            margin-bottom: 10px;
-            font-family: 'Courier New', monospace;
-        }
-        
-        input[type="text"] {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            color: #ccc;
-            padding: 8px;
-            width: 100%;
-            margin-bottom: 10px;
-            font-family: 'Courier New', monospace;
-        }
-        
-        .btn {
-            background: #333;
-            color: #ccc;
-            border: 1px solid #444;
-            padding: 8px 16px;
-            cursor: pointer;
-            font-family: 'Courier New', monospace;
-            font-size: 13px;
-            display: inline-block;
-            margin-right: 5px;
-            margin-bottom: 5px;
-        }
-        
-        .btn:hover {
-            background: #3a3a3a;
-            border-color: #555;
-        }
-        
-        .btn-red {
-            background: #2a1a1a;
-            border-color: #522;
-        }
-        
-        .btn-red:hover {
-            background: #3a2a2a;
-        }
-        
-        .host-list {
-            margin-top: 20px;
-        }
-        
-        .host-item {
-            background: #222;
-            border: 1px solid #333;
-            padding: 15px;
-            margin-bottom: 10px;
-        }
-        
-        .host-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        
-        .host-name {
-            color: #aaa;
-            font-weight: bold;
-        }
-        
-        .host-status {
-            padding: 2px 8px;
-            font-size: 11px;
-            border-radius: 2px;
-        }
-        
-        .status-running {
-            background: #1a2a1a;
-            color: #5c5;
-            border: 1px solid #2a3a2a;
-        }
-        
-        .status-stopped {
-            background: #2a1a1a;
-            color: #c55;
-            border: 1px solid #3a2a2a;
-        }
-        
-        .host-command {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            padding: 6px 10px;
-            margin: 8px 0;
-            font-family: 'Courier New', monospace;
-            color: #8af;
-        }
-        
-        .host-info {
-            color: #666;
-            font-size: 12px;
-            margin-top: 8px;
-        }
-        
-        .no-projects {
-            color: #666;
-            text-align: center;
-            padding: 40px 20px;
-            border: 1px dashed #333;
-        }
-        
-        .actions {
-            margin-top: 10px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-        }
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0a0a0a;color:#aaa;font-family:'Courier New',monospace;font-size:13px;padding:15px}
+        .container{max-width:700px;margin:0 auto}
+        h1{color:#666;font-size:16px;margin-bottom:15px;padding-bottom:5px;border-bottom:1px solid #222}
+        .box{background:#111;border:1px solid #222;padding:15px;margin-bottom:15px}
+        input,button{padding:6px;margin:4px 0;width:100%;background:#0a0a0a;border:1px solid #333;color:#aaa;font-family:'Courier New'}
+        button{background:#222;cursor:pointer}
+        button:hover{background:#2a2a2a}
+        .btn-sm{padding:4px 8px;width:auto;margin-right:5px;font-size:12px}
+        .btn-red{background:#1a0a0a;border-color:#522}
+        .btn-green{background:#0a1a0a;border-color:#252}
+        .host{border:1px solid #222;padding:12px;margin:8px 0;background:#111}
+        .host-header{display:flex;justify-content:space-between;margin-bottom:8px}
+        .host-name{color:#888;font-weight:bold}
+        .status{padding:2px 6px;font-size:11px;border-radius:1px}
+        .running{background:#0a2a0a;color:#5c5;border:1px solid #1a3a1a}
+        .stopped{background:#2a0a0a;color:#c55;border:1px solid #3a1a1a}
+        .command{background:#0a0a0a;border-left:2px solid #333;padding:4px 8px;margin:6px 0;color:#8af}
+        .info{color:#555;font-size:11px;margin-top:5px}
+        .no-projects{text-align:center;padding:30px;color:#444;border:1px dashed #222}
+        .actions{margin-top:8px}
+        .ping-status{position:fixed;top:10px;right:10px;color:#555;font-size:11px}
     </style>
 </head>
 <body>
+    <div class="ping-status" id="pingStatus">ping: --</div>
+    
     <div class="container">
         <h1>/host</h1>
         
-        <div class="upload-box">
+        <div class="box">
             <input type="file" id="file" accept=".zip">
             <input type="text" id="command" placeholder="python bot.py" value="python main.py">
-            <button class="btn" onclick="upload()">upload</button>
+            <button onclick="upload()">upload & start</button>
         </div>
         
         <div id="hosts">
-            <div class="no-projects">no projects</div>
+            <div class="no-projects">no active hosts</div>
         </div>
     </div>
     
     <script>
     async function upload() {
-        const file = document.getElementById('file').files[0];
-        const cmd = document.getElementById('command').value.trim();
+        const fileInput = document.getElementById('file');
+        const cmdInput = document.getElementById('command');
         
-        if (!file) {
-            alert('select zip');
-            return;
-        }
-        if (!file.name.endsWith('.zip')) {
-            alert('only zip');
-            return;
-        }
-        if (!cmd) {
-            alert('enter command');
-            return;
-        }
+        if(!fileInput.files[0]) return alert('select zip');
+        if(!fileInput.files[0].name.endsWith('.zip')) return alert('only zip');
+        if(!cmdInput.value.trim()) return alert('enter command');
         
         const form = new FormData();
-        form.append('file', file);
-        form.append('command', cmd);
+        form.append('file', fileInput.files[0]);
+        form.append('command', cmdInput.value);
         
         try {
             const res = await fetch('/upload', {method: 'POST', body: form});
             const data = await res.json();
             
-            if (data.success) {
-                document.getElementById('file').value = '';
-                load();
+            if(data.success) {
+                fileInput.value = '';
+                loadHosts();
             } else {
                 alert('error: ' + data.error);
             }
-        } catch (e) {
+        } catch(e) {
             alert('network error');
         }
     }
     
-    async function load() {
+    async function loadHosts() {
         try {
             const res = await fetch('/hosts');
             const hosts = await res.json();
             
             const container = document.getElementById('hosts');
             
-            if (hosts.length === 0) {
-                container.innerHTML = '<div class="no-projects">no projects</div>';
+            if(hosts.length === 0) {
+                container.innerHTML = '<div class="no-projects">no active hosts</div>';
                 return;
             }
             
-            let html = '<div class="host-list">';
-            
+            let html = '';
             hosts.forEach(host => {
                 html += `
-                <div class="host-item">
+                <div class="host">
                     <div class="host-header">
                         <div class="host-name">${host.name.replace('.zip', '')}</div>
-                        <div class="host-status ${host.status}">${host.status}</div>
+                        <div class="status ${host.status}">${host.status}</div>
                     </div>
-                    <div class="host-command">${host.command}</div>
-                    <div class="host-info">id: ${host.id} | created: ${host.created}</div>
+                    <div class="command">${host.command}</div>
+                    <div class="info">id: ${host.id} | started: ${host.created}</div>
+                    <div class="info">pid: ${host.pid || 'none'}</div>
                     <div class="actions">
-                        <button class="btn" onclick="control('${host.id}', 'stop')">stop</button>
-                        <button class="btn" onclick="restart('${host.id}')">restart</button>
-                        <button class="btn btn-red" onclick="del('${host.id}')">delete</button>
+                        <button class="btn-sm btn-red" onclick="control('${host.id}', 'stop')">stop</button>
+                        <button class="btn-sm btn-green" onclick="control('${host.id}', 'start')">start</button>
+                        <button class="btn-sm" onclick="del('${host.id}')">delete</button>
                     </div>
                 </div>
                 `;
             });
             
-            html += '</div>';
             container.innerHTML = html;
-        } catch (e) {
+        } catch(e) {
             console.error(e);
         }
     }
     
     async function control(id, action) {
         await fetch(`/${id}/${action}`, {method: 'POST'});
-        load();
-    }
-    
-    async function restart(id) {
-        await fetch(`/${id}/restart`, {method: 'POST'});
-        load();
+        setTimeout(loadHosts, 1000);
     }
     
     async function del(id) {
-        if (confirm('delete?')) {
+        if(confirm('delete host?')) {
             await fetch(`/${id}/delete`, {method: 'POST'});
-            load();
+            setTimeout(loadHosts, 1000);
         }
     }
     
-    // Автообновление каждые 5 секунд
-    setInterval(load, 5000);
-    load();
+    // Функция пинга
+    async function pingServer() {
+        try {
+            const start = Date.now();
+            const res = await fetch('/ping');
+            const data = await res.json();
+            const latency = Date.now() - start;
+            
+            document.getElementById('pingStatus').innerHTML = 
+                `ping: ${latency}ms | ${data.time}`;
+            document.getElementById('pingStatus').style.color = '#5c5';
+        } catch(e) {
+            document.getElementById('pingStatus').innerHTML = 'ping: offline';
+            document.getElementById('pingStatus').style.color = '#c55';
+        }
+    }
+    
+    // Запускаем
+    setInterval(loadHosts, 3000);
+    setInterval(pingServer, 10000); // Пинг каждые 10 сек
+    loadHosts();
+    pingServer();
     </script>
 </body>
 </html>
 '''
 
-def load_hosts():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+def save_json(data, filename):
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+def load_json(filename):
+    if os.path.exists(filename):
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
     return []
 
 def save_hosts(hosts):
-    with open(DB_FILE, 'w', encoding='utf-8') as f:
-        json.dump(hosts, f, indent=2, ensure_ascii=False)
+    save_json(hosts, DB_FILE)
 
-def auto_start_all():
-    """Автостарт всех проектов при запуске сервера"""
+def load_hosts():
+    return load_json(DB_FILE)
+
+def save_processes(procs):
+    save_json(procs, PROCESSES_FILE)
+
+def load_processes():
+    return load_json(PROCESSES_FILE)
+
+def is_process_alive(pid):
+    """Проверяет жив ли процесс"""
+    try:
+        if pid and psutil.pid_exists(pid):
+            process = psutil.Process(pid)
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except:
+        pass
+    return False
+
+def start_process(pid, command, project_dir):
+    """Запускает процесс и возвращает его PID"""
+    try:
+        # Сохраняем stdout/stderr в файлы
+        stdout_file = os.path.join(project_dir, 'stdout.log')
+        stderr_file = os.path.join(project_dir, 'stderr.log')
+        
+        with open(stdout_file, 'w') as out, open(stderr_file, 'w') as err:
+            process = subprocess.Popen(
+                command.split(),
+                cwd=project_dir,
+                stdout=out,
+                stderr=err,
+                text=True,
+                start_new_session=True
+            )
+        
+        # Сохраняем PID
+        processes = load_processes()
+        processes.append({
+            'project_id': pid,
+            'pid': process.pid,
+            'command': command,
+            'started': time.time()
+        })
+        save_processes(processes)
+        
+        return process.pid
+    except Exception as e:
+        print(f"Start process error: {e}")
+        return None
+
+def stop_process(project_id):
+    """Останавливает процесс по project_id"""
+    processes = load_processes()
+    for proc in processes[:]:
+        if proc['project_id'] == project_id:
+            try:
+                if is_process_alive(proc['pid']):
+                    os.kill(proc['pid'], signal.SIGTERM)
+                    time.sleep(0.5)
+                    if is_process_alive(proc['pid']):
+                        os.kill(proc['pid'], signal.SIGKILL)
+            except:
+                pass
+            processes.remove(proc)
+    save_processes(processes)
+    return True
+
+def restore_processes():
+    """Восстанавливаем процессы при старте сервера"""
     hosts = load_hosts()
+    processes = load_processes()
+    
+    # Удаляем мертвые процессы
+    alive_processes = []
+    for proc in processes:
+        if is_process_alive(proc['pid']):
+            alive_processes.append(proc)
+        else:
+            # Обновляем статус хоста
+            for host in hosts:
+                if host['id'] == proc['project_id']:
+                    host['status'] = 'stopped'
+    
+    save_processes(alive_processes)
+    save_hosts(hosts)
+    
+    # Запускаем stopped хосты
     for host in hosts:
-        try:
-            pid = host['id']
-            project_dir = os.path.join(PROJECTS, pid)
-            
+        if host.get('status') == 'running':
+            project_dir = os.path.join(PROJECTS, host['id'])
             if os.path.exists(project_dir):
-                proc = subprocess.Popen(
-                    host['command'].split(),
-                    cwd=project_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True
-                )
-                processes[pid] = proc
-                host['status'] = 'running'
+                # Проверяем нет ли уже живого процесса
+                has_alive = False
+                for proc in alive_processes:
+                    if proc['project_id'] == host['id'] and is_process_alive(proc['pid']):
+                        has_alive = True
+                        break
                 
-                def monitor(p=proc, h_id=pid):
-                    p.wait()
-                    if h_id in processes:
-                        del processes[h_id]
-                    hosts = load_hosts()
-                    for h in hosts:
-                        if h['id'] == h_id:
-                            h['status'] = 'stopped'
-                            break
-                    save_hosts(hosts)
-                
-                threading.Thread(target=monitor, daemon=True).start()
-        except:
-            host['status'] = 'stopped'
+                if not has_alive:
+                    print(f"Restarting: {host['name']}")
+                    new_pid = start_process(host['id'], host['command'], project_dir)
+                    if new_pid:
+                        host['pid'] = new_pid
+                        host['status'] = 'running'
     
     save_hosts(hosts)
+
+# Функция авто-пинга
+def auto_ping():
+    """Автоматический пинг сервера каждые 4 минуты"""
+    print(f"🚀 Авто-пинг запущен для {PING_URL}")
+    while True:
+        try:
+            response = requests.get(PING_URL, timeout=10)
+            print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Пинг. Статус: {response.status_code}")
+        except Exception as e:
+            print(f"❌ [{datetime.now().strftime('%H:%M:%S')}] Ошибка: {e}")
+        time.sleep(PING_INTERVAL)
+
+# Запускаем авто-пинг в отдельном потоке
+ping_thread = threading.Thread(target=auto_ping, daemon=True)
+ping_thread.start()
 
 @app.route('/')
 def home():
     return render_template_string(HTML)
 
+@app.route('/ping')
+def ping():
+    """Эндпоинт для пинга"""
+    return jsonify({
+        'status': 'ok',
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'server': 'Python Host',
+        'url': PING_URL
+    })
+
 @app.route('/upload', methods=['POST'])
 def upload():
     try:
         file = request.files['file']
-        cmd = request.form['command'].strip()
-        pid = str(uuid.uuid4())[:8]
+        command = request.form['command'].strip()
+        
+        if not file.filename.endswith('.zip'):
+            return jsonify({'success': False, 'error': 'only zip files'})
+        
+        # Создаем проект
+        project_id = str(uuid.uuid4())[:8]
         
         # Сохраняем ZIP
-        zip_path = os.path.join(UPLOADS, f'{pid}_{file.filename}')
+        zip_path = os.path.join(UPLOADS, f'{project_id}_{file.filename}')
         file.save(zip_path)
         
         # Распаковываем
-        project_dir = os.path.join(PROJECTS, pid)
+        project_dir = os.path.join(PROJECTS, project_id)
         os.makedirs(project_dir, exist_ok=True)
         
         with zipfile.ZipFile(zip_path, 'r') as z:
             z.extractall(project_dir)
         
-        # Запускаем
-        proc = subprocess.Popen(
-            cmd.split(),
-            cwd=project_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
+        # Запускаем процесс
+        pid = start_process(project_id, command, project_dir)
         
-        processes[pid] = proc
+        if not pid:
+            return jsonify({'success': False, 'error': 'failed to start process'})
         
-        # Сохраняем в БД
+        # Сохраняем хост
         host = {
-            'id': pid,
+            'id': project_id,
             'name': file.filename,
-            'command': cmd,
+            'command': command,
             'status': 'running',
-            'created': time.strftime('%H:%M:%S'),
-            'pid': proc.pid
+            'pid': pid,
+            'created': time.strftime('%H:%M:%S')
         }
         
         hosts = load_hosts()
         hosts.append(host)
         save_hosts(hosts)
         
-        # Мониторинг в фоне
-        def monitor():
-            proc.wait()
-            if pid in processes:
-                del processes[pid]
-            hosts = load_hosts()
-            for h in hosts:
-                if h['id'] == pid:
-                    h['status'] = 'stopped'
-                    break
-            save_hosts(hosts)
-        
-        threading.Thread(target=monitor, daemon=True).start()
-        return jsonify({'success': True, 'id': pid})
+        return jsonify({'success': True, 'id': project_id})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -404,121 +378,82 @@ def upload():
 def get_hosts():
     hosts = load_hosts()
     
+    # Обновляем статусы
     for host in hosts:
-        pid = host['id']
-        if pid in processes:
-            proc = processes[pid]
-            host['status'] = 'running' if proc.poll() is None else 'stopped'
+        if host.get('pid') and is_process_alive(host['pid']):
+            host['status'] = 'running'
         else:
             host['status'] = 'stopped'
+            host['pid'] = None
     
     save_hosts(hosts)
     return jsonify(hosts)
 
-@app.route('/<pid>/stop', methods=['POST'])
-def stop(pid):
+@app.route('/<project_id>/<action>', methods=['POST'])
+def control_host(project_id, action):
     try:
-        if pid in processes:
-            proc = processes[pid]
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except:
-                proc.kill()
-            del processes[pid]
-        
         hosts = load_hosts()
-        for host in hosts:
-            if host['id'] == pid:
-                host['status'] = 'stopped'
-                break
-        
-        save_hosts(hosts)
-        return jsonify({'success': True})
-    except:
-        return jsonify({'success': False})
-
-@app.route('/<pid>/restart', methods=['POST'])
-def restart(pid):
-    try:
-        # Останавливаем если запущен
-        if pid in processes:
-            proc = processes[pid]
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except:
-                proc.kill()
-            del processes[pid]
-        
-        hosts = load_hosts()
-        host = next((h for h in hosts if h['id'] == pid), None)
+        host = next((h for h in hosts if h['id'] == project_id), None)
         
         if not host:
-            return jsonify({'success': False, 'error': 'not found'})
+            return jsonify({'success': False, 'error': 'host not found'})
         
-        project_dir = os.path.join(PROJECTS, pid)
-        if not os.path.exists(project_dir):
-            return jsonify({'success': False, 'error': 'files missing'})
+        project_dir = os.path.join(PROJECTS, project_id)
         
-        # Перезапускаем
-        proc = subprocess.Popen(
-            host['command'].split(),
-            cwd=project_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
+        if action == 'stop':
+            stop_process(project_id)
+            host['status'] = 'stopped'
+            host['pid'] = None
+            
+        elif action == 'start':
+            # Останавливаем если уже запущен
+            stop_process(project_id)
+            
+            # Запускаем заново
+            if os.path.exists(project_dir):
+                pid = start_process(project_id, host['command'], project_dir)
+                if pid:
+                    host['pid'] = pid
+                    host['status'] = 'running'
+                else:
+                    return jsonify({'success': False, 'error': 'failed to start'})
+            else:
+                return jsonify({'success': False, 'error': 'project files missing'})
         
-        processes[pid] = proc
-        host['status'] = 'running'
         save_hosts(hosts)
-        
-        def monitor():
-            proc.wait()
-            if pid in processes:
-                del processes[pid]
-            hosts = load_hosts()
-            for h in hosts:
-                if h['id'] == pid:
-                    h['status'] = 'stopped'
-                    break
-            save_hosts(hosts)
-        
-        threading.Thread(target=monitor, daemon=True).start()
         return jsonify({'success': True})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/<pid>/delete', methods=['POST'])
-def delete(pid):
+@app.route('/<project_id>/delete', methods=['POST'])
+def delete_host(project_id):
     try:
         # Останавливаем
-        if pid in processes:
-            proc = processes[pid]
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except:
-                proc.kill()
-            del processes[pid]
+        stop_process(project_id)
         
         # Удаляем из БД
-        hosts = [h for h in load_hosts() if h['id'] != pid]
+        hosts = [h for h in load_hosts() if h['id'] != project_id]
         save_hosts(hosts)
         
+        # Удаляем процессы
+        processes = [p for p in load_processes() if p['project_id'] != project_id]
+        save_processes(processes)
+        
         # Удаляем файлы
-        project_dir = os.path.join(PROJECTS, pid)
+        project_dir = os.path.join(PROJECTS, project_id)
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir)
         
         return jsonify({'success': True})
-    except:
-        return jsonify({'success': False})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
-# Запускаем все проекты при старте
-auto_start_all()
-
+# Инициализация при старте
 if __name__ == '__main__':
+    restore_processes()
     app.run(host='0.0.0.0', port=5000)
+else:
+    # Для gunicorn
+    restore_processes()
