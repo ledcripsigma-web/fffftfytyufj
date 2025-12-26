@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: python-host
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+    disk:
+      name: uploads
+      mountPath: /var/data/uploads
+      sizeGB: 1
